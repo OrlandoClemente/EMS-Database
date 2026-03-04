@@ -191,7 +191,12 @@ tbody tr:hover td{background:var(--s2);}
 <!-- ========== КОНФІГ — ВСТАВ СВОЇ ДАНІ ТУТ ========== -->
 <script>
 const CONFIG = {
-  scriptUrl:  'https://script.google.com/macros/s/AKfycby-Pno2UlR3FmuyseCOpCrIuBRj5q-3qI5Ix1s6z4RMusQX8FCqjVFXHKbUYUdK7kbEpQ/exec',
+  // Apps Script Web App URL (для запису та видалення)
+  scriptUrl:  'https://script.google.com/macros/s/AKfycby9amAWdvNPHmKMDycQi79Prqc8N5qcdpMm-JBu5zPns9u-oh4uBKIPH0ABtPh8CA17Ow/exec',
+  // Публічний CSV експорт таблиці reports (для читання)
+  // Формат: https://docs.google.com/spreadsheets/d/SHEET_ID/gviz/tq?tqx=out:csv&sheet=reports
+  csvUrl:     'https://docs.google.com/spreadsheets/d/1TxyFBXYaZI5l8jbgQpFho--FUShXXPmu1Kv_2tfOiXo/gviz/tq?tqx=out:csv&sheet=reports',
+  // Discord Webhook
   webhookUrl: 'https://discord.com/api/webhooks/1428505639029702698/CKgnC2ZI77TWG9RinYLc0kXdfZtTjnzftefYNySq00xoAJ6_QgZ2Qw8_Sl0OWRL2WcR-',
 };
 </script>
@@ -425,29 +430,81 @@ let pendingDeleteId = null;
 let currentFilter = '30d';
 
 // =====================================================================
-//  API — всі запити через GET (немає preflight, немає CORS проблем)
+//  API
+//  - Запис/видалення: no-cors (браузер не читає відповідь, але дані йдуть)
+//  - Читання: публічний CSV з Google Sheets (без CORS проблем)
 // =====================================================================
-async function api(params) {
+
+// Відправити дію на Apps Script (без читання відповіді — no-cors)
+async function apiWrite(params) {
   const url = CONFIG.scriptUrl + '?' + new URLSearchParams(params).toString();
-  const res = await fetch(url);
+  await fetch(url, { method: 'GET', mode: 'no-cors' });
+  // no-cors — відповідь недоступна, але запит доходить
+}
+
+// Перевірити авторизацію (потребує читання відповіді — через звичайний fetch)
+// Працює тому що checkAuth не робить redirect
+async function apiRead(params) {
+  const url = CONFIG.scriptUrl + '?' + new URLSearchParams(params).toString();
+  const res = await fetch(url, { redirect: 'follow' });
   return res.json();
 }
 
+// Читати звіти через публічний CSV Google Sheets
 async function loadReports() {
   showLoading('Завантаження звітів...');
   try {
-    const data = await api({ action: 'getReports' });
-    if (data.ok) {
-      DB = data.reports || [];
-      renderHistory();
-      renderStats();
-    } else {
-      toast(data.error || 'Помилка завантаження', 'err');
-    }
+    const res = await fetch(CONFIG.csvUrl);
+    const text = await res.text();
+    DB = parseCSV(text);
+    DB.sort((a,b) => new Date(b.date) - new Date(a.date));
+    renderHistory();
+    renderStats();
   } catch(e) {
-    toast('Не вдалось підключитись до сервера', 'err');
+    toast('Помилка завантаження даних', 'err');
   }
   hideLoading();
+}
+
+// Парсер CSV з Google Sheets
+function parseCSV(text) {
+  const lines = text.trim().split('\n');
+  if (lines.length <= 1) return [];
+  // Пропускаємо заголовок (рядок 0)
+  const reports = [];
+  for (let i = 1; i < lines.length; i++) {
+    const cols = parseCSVLine(lines[i]);
+    if (!cols[0]) continue;
+    try {
+      reports.push({
+        id:       cols[0].replace(/^"|"$/g,''),
+        date:     cols[1].replace(/^"|"$/g,''),
+        nick:     cols[2].replace(/^"|"$/g,''),
+        staticId: cols[3].replace(/^"|"$/g,''),
+        items:    JSON.parse(cols[4].replace(/^"|"$/g,'').replace(/""/g,'"')),
+        total:    Number(cols[5].replace(/^"|"$/g,'')),
+      });
+    } catch(e) {}
+  }
+  return reports;
+}
+
+function parseCSVLine(line) {
+  const result = [];
+  let cur = '', inQ = false;
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i];
+    if (c === '"') {
+      if (inQ && line[i+1] === '"') { cur += '"'; i++; }
+      else inQ = !inQ;
+    } else if (c === ',' && !inQ) {
+      result.push(cur); cur = '';
+    } else {
+      cur += c;
+    }
+  }
+  result.push(cur);
+  return result;
 }
 
 // =====================================================================
@@ -531,25 +588,25 @@ async function submitReport() {
   btn.innerHTML='<span class="spinner"></span> Відправка...';
 
   try {
-    // Компактний формат: "medkit:3,form1:1" замість повного JSON
+    // Компактний формат: "medkit:3,form1:1"
     const itemsCompact = selected.map(i=>`${i.id}:${i.qty}`).join(',');
-    const res = await api({
-      action:   'addReport',
-      nick,
-      staticId,
-      items:    itemsCompact,
-    });
+    const total = selected.reduce((s,i)=>s+i.qty*i.price,0);
 
-    if (res.ok) {
-      const report = {id:res.id, nick, staticId, date:new Date().toISOString(),
-        items:selected.map(i=>({id:i.id,name:i.name,price:i.price,qty:i.qty})), total:res.total};
-      DB.unshift(report);
-      await sendDiscord(report);
-      toast('Звіт успішно відправлено!','ok');
-      resetForm();
-    } else {
-      toast(res.error||'Помилка збереження','err');
-    }
+    // no-cors — не читаємо відповідь, але запит гарантовано доходить
+    await apiWrite({ action:'addReport', nick, staticId, items:itemsCompact });
+
+    // Оновлюємо локальний DB одразу (optimistic update)
+    const report = {
+      id: Date.now().toString(),
+      nick, staticId,
+      date: new Date().toISOString(),
+      items: selected.map(i=>({id:i.id,name:i.name,price:i.price,qty:i.qty})),
+      total,
+    };
+    DB.unshift(report);
+    await sendDiscord(report);
+    toast('Звіт успішно відправлено!','ok');
+    resetForm();
   } catch(e) {
     toast('Помилка з\'єднання з сервером','err');
   }
@@ -647,15 +704,20 @@ async function confirmDelete() {
   btn.disabled=true;
   btn.innerHTML='<span class="spinner" style="border-top-color:var(--red);border-color:rgba(255,82,82,.2);"></span> Видалення...';
   try {
-    const res=await api({action:'deleteReport',login,password,id:pendingDeleteId});
-    if(res.ok){
-      DB=DB.filter(r=>r.id!==pendingDeleteId);
-      renderHistory();renderStats();
-      closeOverlay('del-overlay');
-      toast('Запис видалено','ok');
-    } else {
-      setDelStatus('err',res.error||'Невірний логін або пароль');
+    // Спочатку перевіряємо авторизацію (читаємо відповідь)
+    const authRes = await apiRead({action:'checkAuth', login, password});
+    if (!authRes.ok) {
+      setDelStatus('err', authRes.error||'Невірний логін або пароль');
+      btn.disabled=false;
+      btn.innerHTML='<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6m5 0V4a1 1 0 011-1h2a1 1 0 011 1v2"/></svg> Видалити';
+      return;
     }
+    // Авторизація пройдена — відправляємо видалення (no-cors)
+    await apiWrite({action:'deleteReport', login, password, id:pendingDeleteId});
+    DB=DB.filter(r=>r.id!==pendingDeleteId);
+    renderHistory();renderStats();
+    closeOverlay('del-overlay');
+    toast('Запис видалено','ok');
   } catch(e){setDelStatus('err','Помилка з\'єднання');}
   btn.disabled=false;
   btn.innerHTML='<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6m5 0V4a1 1 0 011-1h2a1 1 0 011 1v2"/></svg> Видалити';
