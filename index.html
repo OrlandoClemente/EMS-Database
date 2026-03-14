@@ -69,7 +69,7 @@ nav{position:sticky;top:0;z-index:100;background:rgba(8,13,24,.92);backdrop-filt
 .item-controls{display:flex;align-items:center;gap:.4rem;margin-left:.85rem;}
 .qty-btn{width:26px;height:26px;border-radius:6px;border:1px solid var(--border2);background:var(--s3);color:var(--text);font-size:1rem;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:all .15s;flex-shrink:0;}
 .qty-btn:hover{background:var(--border2);}
-.qty-val{width:34px;text-align:center;background:var(--s1);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:.88rem;padding:.2rem;outline:none;font-family:'Nunito',sans-serif;}
+.qty-val{width:55px;text-align:center;background:var(--s1);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:.88rem;padding:.2rem;outline:none;font-family:'Nunito',sans-serif;}
 
 /* FOOTER */
 .report-footer{display:flex;align-items:center;justify-content:space-between;padding:1rem 1.4rem;background:var(--s1);border:1px solid var(--border);border-radius:11px;margin-top:1.25rem;}
@@ -577,7 +577,7 @@ function resetForm(){
 
 async function submitReport() {
   const nick    = document.getElementById('inp-nick').value.trim();
-  const staticId= document.getElementById('inp-static').value.trim();
+  const staticId= document.getElementById('inp-static').value.trim().replace(/^#/,'');
   if (!nick||!staticId) { toast('Заповніть нік та Static ID','err'); return; }
   const selected = getSelected();
   if (!selected.length) { toast('Оберіть хоча б один предмет','err'); return; }
